@@ -1,23 +1,25 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.patients import get_patient_or_404
+from app.config import get_settings
 from app.db.database import get_db
 from app.db.models import ChatSession, Message
-from app.services.gemini import GeminiError, generate_reply
-from app.services.safety import check_off_topic, check_red_flags
-from app.services.session import (
-    default_session_state,
-    get_session_state,
-    save_session_state,
-    trim_history,
-)
+from app.services.chat_service import process_message
+from app.services.gemini import GeminiError
+from app.services.storage import upload_audio
+from app.services.transcription import transcribe_audio
+from app.services.session import default_session_state, save_session_state
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+settings = get_settings()
+
+MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 class ChatRequest(BaseModel):
@@ -31,6 +33,7 @@ class ChatResponse(BaseModel):
     mode: str
     red_flag_triggered: bool = False
     off_topic: bool = False
+    transcription: str | None = None
 
 
 class SessionSummary(BaseModel):
@@ -45,6 +48,8 @@ class MessageOut(BaseModel):
     id: str
     direction: str
     content: str
+    message_type: str
+    audio_url: str | None
     red_flag_triggered: bool
     created_at: datetime
 
@@ -57,73 +62,100 @@ class SessionDetail(BaseModel):
     messages: list[MessageOut]
 
 
+async def _require_patient_id(x_patient_id: str | None = Header(default=None)) -> str:
+    if not x_patient_id:
+        raise HTTPException(status_code=401, detail="Patient ID required. Please register first.")
+    return x_patient_id
+
+
 @router.post("", response_model=ChatResponse)
-async def send_message(body: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
-    session_id = body.session_id or str(uuid.uuid4())
-    user_text = body.message.strip()
+async def send_message(
+    body: ChatRequest,
+    patient_id: str = Depends(_require_patient_id),
+    db: AsyncSession = Depends(get_db),
+) -> ChatResponse:
+    patient = await get_patient_or_404(patient_id, db)
+    result = await process_message(db, patient, body.message, body.session_id)
+    return ChatResponse(
+        session_id=result.session_id,
+        reply=result.reply,
+        mode=result.mode,
+        red_flag_triggered=result.red_flag_triggered,
+        off_topic=result.off_topic,
+    )
 
-    red_flag = check_red_flags(user_text)
-    if red_flag.blocked:
-        reply = red_flag.reply or ""
-        await _persist_exchange(db, session_id, user_text, reply, red_flag_triggered=True)
-        state = await _load_or_create_state(session_id)
-        state["history"].append({"role": "user", "content": user_text})
-        state["history"].append({"role": "assistant", "content": reply})
-        state["history"] = trim_history(state["history"], 15)
-        await save_session_state(session_id, state)
-        return ChatResponse(
-            session_id=session_id,
-            reply=reply,
-            mode=state.get("mode", "triage"),
-            red_flag_triggered=True,
+
+@router.post("/voice", response_model=ChatResponse)
+async def send_voice_message(
+    file: UploadFile = File(...),
+    session_id: str | None = Form(default=None),
+    duration_seconds: float | None = Form(default=None),
+    patient_id: str = Depends(_require_patient_id),
+    db: AsyncSession = Depends(get_db),
+) -> ChatResponse:
+    if duration_seconds is not None and duration_seconds > settings.max_voice_seconds:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Voice note must be {settings.max_voice_seconds} seconds or less",
         )
 
-    off_topic = check_off_topic(user_text)
-    if off_topic.blocked:
-        reply = off_topic.reply or ""
-        await _persist_exchange(db, session_id, user_text, reply)
-        state = await _load_or_create_state(session_id)
-        state["history"].append({"role": "user", "content": user_text})
-        state["history"].append({"role": "assistant", "content": reply})
-        state["history"] = trim_history(state["history"], 15)
-        await save_session_state(session_id, state)
-        return ChatResponse(
-            session_id=session_id,
-            reply=reply,
-            mode=state.get("mode", "triage"),
-            off_topic=True,
-        )
+    content_type = file.content_type or "audio/webm"
+    if not content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="File must be an audio recording")
 
-    state = await _load_or_create_state(session_id)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=400, detail="Audio file too large")
+
+    patient = await get_patient_or_404(patient_id, db)
+
+    audio_url: str | None = None
+    try:
+        audio_url = upload_audio(data, content_type, patient_id)
+    except Exception:
+        # Continue without storage if bucket fails — transcription still works
+        audio_url = None
 
     try:
-        reply = await generate_reply(state["history"], user_text)
+        transcription = await transcribe_audio(data, content_type)
     except GeminiError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    state["history"].append({"role": "user", "content": user_text})
-    state["history"].append({"role": "assistant", "content": reply})
-    state["history"] = trim_history(state["history"], 15)
-    await save_session_state(session_id, state)
-
-    await _persist_exchange(db, session_id, user_text, reply)
+    result = await process_message(
+        db,
+        patient,
+        transcription,
+        session_id,
+        message_type="voice",
+        audio_url=audio_url,
+    )
 
     return ChatResponse(
-        session_id=session_id,
-        reply=reply,
-        mode=state.get("mode", "triage"),
+        session_id=result.session_id,
+        reply=result.reply,
+        mode=result.mode,
+        red_flag_triggered=result.red_flag_triggered,
+        off_topic=result.off_topic,
+        transcription=transcription,
     )
 
 
 @router.post("/sessions", response_model=SessionSummary)
-async def create_session(db: AsyncSession = Depends(get_db)) -> SessionSummary:
-    session = ChatSession(mode="triage")
+async def create_session(
+    patient_id: str = Depends(_require_patient_id),
+    db: AsyncSession = Depends(get_db),
+) -> SessionSummary:
+    patient = await get_patient_or_404(patient_id, db)
+    session = ChatSession(patient_id=patient.id, mode="triage")
     db.add(session)
     await db.commit()
     await db.refresh(session)
 
     state = default_session_state()
-    await save_session_state(str(session.id), state)
+    state["patient_id"] = patient_id
+    await save_session_state(f"joy:session:{patient_id}:{session.id}", state)
 
     return SessionSummary(
         id=str(session.id),
@@ -135,8 +167,17 @@ async def create_session(db: AsyncSession = Depends(get_db)) -> SessionSummary:
 
 
 @router.get("/sessions", response_model=list[SessionSummary])
-async def list_sessions(db: AsyncSession = Depends(get_db)) -> list[SessionSummary]:
-    result = await db.execute(select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(50))
+async def list_sessions(
+    patient_id: str = Depends(_require_patient_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[SessionSummary]:
+    patient = await get_patient_or_404(patient_id, db)
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.patient_id == patient.id)
+        .order_by(ChatSession.updated_at.desc())
+        .limit(50)
+    )
     sessions = result.scalars().all()
     return [
         SessionSummary(
@@ -151,13 +192,20 @@ async def list_sessions(db: AsyncSession = Depends(get_db)) -> list[SessionSumma
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
-async def get_session(session_id: str, db: AsyncSession = Depends(get_db)) -> SessionDetail:
+async def get_session(
+    session_id: str,
+    patient_id: str = Depends(_require_patient_id),
+    db: AsyncSession = Depends(get_db),
+) -> SessionDetail:
+    patient = await get_patient_or_404(patient_id, db)
     try:
         sid = uuid.UUID(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid session ID") from exc
 
-    result = await db.execute(select(ChatSession).where(ChatSession.id == sid))
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == sid, ChatSession.patient_id == patient.id)
+    )
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -177,47 +225,11 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)) -> Se
                 id=str(m.id),
                 direction=m.direction,
                 content=m.content,
+                message_type=m.message_type,
+                audio_url=m.audio_url,
                 red_flag_triggered=m.red_flag_triggered,
                 created_at=m.created_at,
             )
             for m in messages
         ],
     )
-
-
-async def _load_or_create_state(session_id: str) -> dict:
-    state = await get_session_state(session_id)
-    if state is None:
-        state = default_session_state()
-        await save_session_state(session_id, state)
-    return state
-
-
-async def _persist_exchange(
-    db: AsyncSession,
-    session_id: str,
-    user_text: str,
-    reply: str,
-    *,
-    red_flag_triggered: bool = False,
-) -> None:
-    try:
-        sid = uuid.UUID(session_id)
-    except ValueError:
-        return
-
-    result = await db.execute(select(ChatSession).where(ChatSession.id == sid))
-    session = result.scalar_one_or_none()
-
-    if session is None:
-        title = user_text[:80] + ("..." if len(user_text) > 80 else "")
-        session = ChatSession(id=sid, title=title, mode="triage")
-        db.add(session)
-    elif not session.title:
-        session.title = user_text[:80] + ("..." if len(user_text) > 80 else "")
-
-    session.updated_at = datetime.now(timezone.utc)
-
-    db.add(Message(session_id=sid, direction="in", content=user_text, red_flag_triggered=red_flag_triggered))
-    db.add(Message(session_id=sid, direction="out", content=reply, red_flag_triggered=red_flag_triggered))
-    await db.commit()

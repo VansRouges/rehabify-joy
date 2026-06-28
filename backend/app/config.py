@@ -13,11 +13,19 @@ class Settings(BaseSettings):
     database_public_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
 
+    bucket_name: str = ""
+    bucket_access_key: str = ""
+    bucket_secret_key: str = ""
+    bucket_endpoint: str = ""
+    bucket_region: str = "auto"
+
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    sync_db_on_startup: bool = False
 
     session_ttl_seconds: int = 86400
     max_history_turns: int = 15
+    max_voice_seconds: int = 60
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -25,12 +33,19 @@ class Settings(BaseSettings):
 
     @property
     def effective_database_url(self) -> str:
-        """Use public Railway URL locally; internal hostname only works inside Railway."""
-        if self.database_public_url and (
-            self.app_env == "development" or ".railway.internal" in self.database_url
-        ):
+        """Local dev uses the public Railway proxy; production uses the internal URL."""
+        if self.app_env == "development" and self.database_public_url:
             return self.database_public_url
         return self.database_url
+
+    @property
+    def bucket_configured(self) -> bool:
+        return bool(
+            self.bucket_name
+            and self.bucket_access_key
+            and self.bucket_secret_key
+            and self.bucket_endpoint
+        )
 
 
 @lru_cache

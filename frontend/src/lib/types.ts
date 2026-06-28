@@ -3,6 +3,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   redFlag?: boolean;
+  messageType?: "text" | "voice";
+  transcription?: string;
 }
 
 export interface ChatResponse {
@@ -11,6 +13,13 @@ export interface ChatResponse {
   mode: string;
   red_flag_triggered?: boolean;
   off_topic?: boolean;
+  transcription?: string;
+}
+
+export interface PatientProfile {
+  patient_id: string;
+  phone_number: string;
+  display_name: string;
 }
 
 export interface SessionSummary {
@@ -30,6 +39,8 @@ export interface SessionDetail {
     id: string;
     direction: string;
     content: string;
+    message_type: string;
+    audio_url: string | null;
     red_flag_triggered: boolean;
     created_at: string;
   }[];

@@ -11,6 +11,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  patientName?: string | null;
 }
 
 export function Sidebar({
@@ -20,6 +21,7 @@ export function Sidebar({
   onSelectSession,
   collapsed,
   onToggleCollapse,
+  patientName,
 }: SidebarProps) {
   if (collapsed) {
     return (
@@ -100,6 +102,9 @@ export function Sidebar({
       </div>
 
       <div className="border-t border-joy-border p-4">
+        {patientName && (
+          <p className="mb-2 truncate text-sm font-medium text-joy-text">{patientName}</p>
+        )}
         <div className="rounded-xl bg-joy-sage px-3 py-2.5">
           <p className="text-xs font-medium text-joy-green">Piloting in Lagos & Abuja</p>
           <Link href="https://physioaroundme.com" target="_blank" className="mt-0.5 text-[11px] text-joy-text-muted">physioaroundme.com</Link>

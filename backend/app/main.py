@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
+from app.api.patients import router as patients_router
 from app.config import get_settings
 from app.db.database import init_db
 from app.services.session import close_redis
@@ -14,7 +15,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await init_db()
+    if settings.sync_db_on_startup:
+        await init_db()
     yield
     await close_redis()
 
@@ -22,7 +24,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Joy API",
     description="Rehabify Joy AI — backend service",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -35,4 +37,5 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix="/api")
+app.include_router(patients_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
