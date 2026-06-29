@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -18,6 +19,7 @@ from app.services.session import default_session_state, save_session_state
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
 
@@ -34,6 +36,8 @@ class ChatResponse(BaseModel):
     red_flag_triggered: bool = False
     off_topic: bool = False
     transcription: str | None = None
+    audio_url: str | None = None
+    audio_stored: bool = False
 
 
 class SessionSummary(BaseModel):
@@ -112,11 +116,18 @@ async def send_voice_message(
     patient = await get_patient_or_404(patient_id, db)
 
     audio_url: str | None = None
-    try:
-        audio_url = upload_audio(data, content_type, patient_id)
-    except Exception:
-        # Continue without storage if bucket fails — transcription still works
-        audio_url = None
+    audio_stored = False
+    if settings.bucket_configured:
+        try:
+            audio_url = upload_audio(data, content_type, patient_id)
+            audio_stored = True
+        except Exception as exc:
+            logger.exception("Voice note bucket upload failed for patient %s: %s", patient_id, exc)
+    else:
+        logger.warning(
+            "Bucket not configured — voice note transcribed but not stored. "
+            "Set BUCKET, ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT on the server."
+        )
 
     try:
         transcription = await transcribe_audio(data, content_type)
@@ -139,6 +150,8 @@ async def send_voice_message(
         red_flag_triggered=result.red_flag_triggered,
         off_topic=result.off_topic,
         transcription=transcription,
+        audio_url=audio_url,
+        audio_stored=audio_stored,
     )
 
 

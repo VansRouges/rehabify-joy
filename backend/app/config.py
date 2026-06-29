@@ -1,10 +1,16 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
@@ -13,11 +19,27 @@ class Settings(BaseSettings):
     database_public_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
 
-    bucket_name: str = ""
-    bucket_access_key: str = ""
-    bucket_secret_key: str = ""
-    bucket_endpoint: str = ""
-    bucket_region: str = "auto"
+    # Accept our names and Railway's native bucket variable names
+    bucket_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUCKET_NAME", "BUCKET", "AWS_S3_BUCKET_NAME"),
+    )
+    bucket_access_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUCKET_ACCESS_KEY", "ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+    )
+    bucket_secret_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUCKET_SECRET_KEY", "SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+    )
+    bucket_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUCKET_ENDPOINT", "ENDPOINT", "AWS_ENDPOINT_URL"),
+    )
+    bucket_region: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("BUCKET_REGION", "REGION", "AWS_DEFAULT_REGION"),
+    )
 
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"

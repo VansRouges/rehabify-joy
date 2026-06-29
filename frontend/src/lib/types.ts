@@ -14,6 +14,8 @@ export interface ChatResponse {
   red_flag_triggered?: boolean;
   off_topic?: boolean;
   transcription?: string;
+  audio_url?: string | null;
+  audio_stored?: boolean;
 }
 
 export interface PatientProfile {
