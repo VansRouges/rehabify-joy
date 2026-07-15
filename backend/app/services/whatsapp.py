@@ -188,6 +188,7 @@ async def _handle_user_message(
                 session_id,
                 message_type=msg_type,
                 audio_url=audio_url,
+                channel="whatsapp",
             )
         except Exception as exc:
             logger.exception("Joy processing failed for WhatsApp user %s: %s", sender, exc)

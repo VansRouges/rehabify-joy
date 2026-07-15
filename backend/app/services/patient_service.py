@@ -26,7 +26,7 @@ async def get_or_create_patient_by_phone(
             await db.refresh(patient)
         return patient
 
-    patient = Patient(phone_number=phone, display_name=name)
+    patient = Patient(phone_number=phone, display_name=name, consent_given=False, intake_data={})
     db.add(patient)
     await db.commit()
     await db.refresh(patient)

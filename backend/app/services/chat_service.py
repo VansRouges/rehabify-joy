@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChatSession, Message, Patient
+from app.services.flow_engine import FlowResult, process_intake_message, should_run_intake
 from app.services.gemini import GeminiError, generate_reply
 from app.services.safety import check_off_topic, check_red_flags
 from app.services.session import (
@@ -28,12 +29,14 @@ class ChatResult:
         *,
         red_flag_triggered: bool = False,
         off_topic: bool = False,
+        intake_complete: bool = False,
     ):
         self.session_id = session_id
         self.reply = reply
         self.mode = mode
         self.red_flag_triggered = red_flag_triggered
         self.off_topic = off_topic
+        self.intake_complete = intake_complete
 
 
 def _session_redis_key(patient_id: str, session_id: str) -> str:
@@ -69,7 +72,9 @@ async def _persist_exchange(
     sid = uuid.UUID(session_id)
     pid = patient.id
 
-    result = await db.execute(select(ChatSession).where(ChatSession.id == sid))
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == sid, ChatSession.patient_id == pid)
+    )
     session = result.scalar_one_or_none()
 
     if session is None:
@@ -105,6 +110,15 @@ async def _persist_exchange(
     await db.commit()
 
 
+def _flow_to_chat_result(flow: FlowResult) -> ChatResult:
+    return ChatResult(
+        flow.session_id,
+        flow.reply,
+        flow.mode,
+        intake_complete=flow.intake_complete,
+    )
+
+
 async def process_message(
     db: AsyncSession,
     patient: Patient,
@@ -113,6 +127,7 @@ async def process_message(
     *,
     message_type: str = "text",
     audio_url: str | None = None,
+    channel: str = "web",
 ) -> ChatResult:
     user_text = user_text.strip()
     if not user_text:
@@ -132,7 +147,19 @@ async def process_message(
         state["history"].append({"role": "user", "content": user_text})
         state["history"].append({"role": "assistant", "content": reply})
         await _save_state(pid, sid, state)
-        return ChatResult(sid, reply, state.get("mode", "triage"), red_flag_triggered=True)
+        return ChatResult(sid, reply, "triage", red_flag_triggered=True)
+
+    if should_run_intake(patient):
+        flow = await process_intake_message(
+            db,
+            patient,
+            user_text,
+            sid,
+            message_type=message_type,
+            audio_url=audio_url,
+            channel=channel,
+        )
+        return _flow_to_chat_result(flow)
 
     off_topic = check_off_topic(user_text)
     if off_topic.blocked:
@@ -145,7 +172,7 @@ async def process_message(
         state["history"].append({"role": "user", "content": user_text})
         state["history"].append({"role": "assistant", "content": reply})
         await _save_state(pid, sid, state)
-        return ChatResult(sid, reply, state.get("mode", "triage"), off_topic=True)
+        return ChatResult(sid, reply, "triage", off_topic=True)
 
     state = await _load_or_create_state(pid, sid)
 

@@ -60,6 +60,8 @@ async def register_patient(
             display_name=name,
             last_ip_address=ip if ip != "unknown" else None,
             ip_addresses=[ip] if ip != "unknown" else [],
+            consent_given=False,
+            intake_data={},
         )
         db.add(patient)
 

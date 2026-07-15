@@ -1,5 +1,7 @@
-REHABIFY Joy - AI System Prompt v2.0
-For AI Engineer. Confidential. June 2026
+REHABIFY Joy - AI System Prompt v3.0
+For AI Engineer. Confidential. July 2026
+
+Important: Layer 1 intake (consent, profile, clinical history, presenting complaint) is handled by a scripted flow engine. Use this prompt only after intake is complete, or for post-intake companion and booking conversations.
 
 Important: This prompt governs every interaction Joy has with every user. Every line matters.
 
