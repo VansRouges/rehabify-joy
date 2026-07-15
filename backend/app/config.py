@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     max_history_turns: int = 15
     max_voice_seconds: int = 60
 
+    whatsapp_access_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_business_account_id: str = ""
+    whatsapp_app_secret: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_graph_api_version: str = "v25.0"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
@@ -59,6 +66,14 @@ class Settings(BaseSettings):
         if self.app_env == "development" and self.database_public_url:
             return self.database_public_url
         return self.database_url
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(
+            self.whatsapp_access_token
+            and self.whatsapp_phone_number_id
+            and self.whatsapp_verify_token
+        )
 
     @property
     def bucket_configured(self) -> bool:
