@@ -8,7 +8,7 @@ from app.api.health import router as health_router
 from app.api.patients import router as patients_router
 from app.api.whatsapp import router as whatsapp_router
 from app.config import get_settings
-from app.db.database import init_db
+from app.db.database import sync_schema
 from app.services.session import close_redis
 
 settings = get_settings()
@@ -16,8 +16,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if settings.sync_db_on_startup:
-        await init_db()
+    await sync_schema()
     yield
     await close_redis()
 
