@@ -115,6 +115,7 @@ def _flow_to_chat_result(flow: FlowResult) -> ChatResult:
         flow.session_id,
         flow.reply,
         flow.mode,
+        red_flag_triggered=flow.red_flag_triggered,
         intake_complete=flow.intake_complete,
     )
 
@@ -136,6 +137,19 @@ async def process_message(
     sid = session_id or str(uuid.uuid4())
     pid = str(patient.id)
 
+    if should_run_intake(patient):
+        flow = await process_intake_message(
+            db,
+            patient,
+            user_text,
+            sid,
+            message_type=message_type,
+            audio_url=audio_url,
+            channel=channel,
+        )
+        return _flow_to_chat_result(flow)
+
+    # Free-text red-flag catch for post-intake conversation
     red_flag = check_red_flags(user_text)
     if red_flag.blocked:
         reply = red_flag.reply or ""
@@ -148,18 +162,6 @@ async def process_message(
         state["history"].append({"role": "assistant", "content": reply})
         await _save_state(pid, sid, state)
         return ChatResult(sid, reply, "triage", red_flag_triggered=True)
-
-    if should_run_intake(patient):
-        flow = await process_intake_message(
-            db,
-            patient,
-            user_text,
-            sid,
-            message_type=message_type,
-            audio_url=audio_url,
-            channel=channel,
-        )
-        return _flow_to_chat_result(flow)
 
     off_topic = check_off_topic(user_text)
     if off_topic.blocked:

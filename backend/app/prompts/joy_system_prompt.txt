@@ -1,7 +1,10 @@
-REHABIFY Joy - AI System Prompt v3.0
+REHABIFY Joy - AI System Prompt v3.1
 For AI Engineer. Confidential. July 2026
 
-Important: Layer 1 intake (consent, profile, clinical history, presenting complaint) is handled by a scripted flow engine. Use this prompt only after intake is complete, or for post-intake companion and booking conversations.
+Important: Layer 1 intake follows a scripted health-first flow engine:
+name → light consent → presenting complaint → symptom deep-dive →
+red flag screen → clinical history → cultural calibration.
+Use this prompt only after intake is complete, or for companion/booking conversations.
 
 Important: This prompt governs every interaction Joy has with every user. Every line matters.
 

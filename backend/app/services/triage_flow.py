@@ -1,49 +1,47 @@
-"""Layer 1 intake flow definitions — consent through presenting complaint (step 5)."""
+"""Layer 1 intake flow — PRD v2 health-first order.
+
+Order: name → light consent → complaint → deep-dive → red flags →
+clinical history → cultural calibration.
+"""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any, Literal
 
-CONSENT_LINKS = """1. Privacy Policy — how we store and use your health information.
-   https://physioaroundme.com/privacy
+FLOW_VERSION = 2
 
-2. Terms of Service — what you agree to by using Rehabify.
-   https://physioaroundme.com/terms
+NAME_PROMPT = "Hello! What can I call you?"
 
-3. Cookie Policy — how we use data to improve your experience.
-   https://physioaroundme.com/cookies
-
-4. Informed Consent — your health information will be used to match you with the right specialist and improve our platform. It will never be sold. It will never be shared without your consent."""
-
-CONSENT_INTRO = """Hello! My name is Joy — I am here to help you understand what is going on with your health and connect you with the right specialist.
-
-Before we begin, I need to share a few important things with you:
-
-{links}
-
-Please reply YES to confirm you have read and agree to these.
-Reply NO if you have any questions first."""
-
-CONSENT_REMINDER = """Have you read the above and do you agree to continue? Please reply YES to continue or NO if you have questions."""
-
-CONSENT_NO_REPLY = """No problem — take your time. If you have questions about how we use your information, visit physioaroundme.com/privacy or reply here and I'll help.
-
-When you're ready to continue, reply YES."""
-
-PROFILE_COMPLETE_MSG = "Great — your profile is set up. Now let me understand what has been going on with you."
-
-CLINICAL_HISTORY_COMPLETE_MSG = (
-    "Thank you for sharing your history — that helps your specialist a lot. "
-    "Now I want to understand what has been going on with you."
+LIGHT_CONSENT_TEMPLATE = (
+    "Nice to meet you {name}! My name is Joy. I am here to help you figure out "
+    "what has been going on and connect you with the right specialist. "
+    "Just so you know — anything you share with me is private and only used to "
+    "get you the right care. Reply YES to continue."
 )
 
-COMPLAINT_COMPLETE_MSG = (
-    "Thank you for sharing all of that with me — I know some of those questions were detailed. "
-    "You've completed the main assessment questions. Next we'll run a quick safety check "
-    "before I summarise everything and recommend next steps."
+LIGHT_CONSENT_BLOCKED = (
+    "I can't continue until you consent. Your privacy matters — I only use what "
+    "you share to get you the right care.\n\n"
+    "Please reply YES (for example: yes, yes I consent, or yes I do) when you're "
+    "ready to continue."
+)
+
+COMPLAINT_OPENING = (
+    "Great — I'm here to help. Tell me, what has been going on? "
+    "What is the main thing that has been bothering you?"
+)
+
+PATHWAY_CLARIFY = (
+    "Thanks for sharing that. Is it mainly pain or discomfort, "
+    "or more numbness, tingling, or weakness — or both?"
+)
+
+CULTURAL_COMPLETE_MSG = (
+    "Thank you for sharing all of that with me — I know some of those questions "
+    "were detailed. Next I'll summarise what I've understood and recommend the "
+    "best next step for you."
 )
 
 PAIN_KEYWORDS = re.compile(
@@ -57,8 +55,30 @@ NEURO_KEYWORDS = re.compile(
     re.I,
 )
 
-YES_RE = re.compile(r"^(yes|y|yeah|yep|ok|okay|sure|agree|i agree|confirmed?)$", re.I)
-NO_RE = re.compile(r"^(no|n|nope|not yet)$", re.I)
+# Explicit refusal / non-consent
+CONSENT_NO_RE = re.compile(
+    r"\b(no|nope|nah|not yet|don'?t|do not|refuse|disagree|won'?t|"
+    r"cannot|can'?t|never)\b",
+    re.I,
+)
+# Affirmative consent — matches "yes", "yes i consent", "yes i do", "i agree", etc.
+CONSENT_YES_RE = re.compile(
+    r"^\s*(yes|yeah|yep|yup|ya|yah|ok|okay|sure|alright|all right|"
+    r"i\s+(do|consent|agree|accept|confirm)|"
+    r"yes[\s,]+(i\s+)?(do|consent|agree|accept|confirm|continue|proceed)|"
+    r"(i\s+)?(consent|agree|accept)|"
+    r"continue|proceed|go\s+ahead|let'?s\s+go)\b",
+    re.I,
+)
+
+YES_RE = re.compile(
+    r"^\s*(yes|yeah|yep|yup|y|ok|okay|sure|i\s+do|i\s+have|"
+    r"yes[\s,]+(i\s+)?(do|have|did))\b",
+    re.I,
+)
+NO_RE = re.compile(r"^\s*(no|n|nope|nah|not really|never)\b", re.I)
+
+ConsentVerdict = Literal["yes", "no", "unclear"]
 
 
 @dataclass(frozen=True)
@@ -69,123 +89,16 @@ class StepDef:
     section: str = "intake"
 
 
-def _parse_dob(raw: str) -> tuple[date | None, str | None]:
-    text = raw.strip()
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
-        try:
-            dob = datetime.strptime(text, fmt).date()
-            break
-        except ValueError:
-            dob = None
-    else:
-        return None, "Please enter your date of birth as DD/MM/YYYY (for example, 15/03/1990)."
+@dataclass(frozen=True)
+class RedFlagStep:
+    id: str
+    prompt: str
+    field: str
+    flag_type: str
+    severity: Literal["emergency", "specialist"]
+    reply: str
+    requires_pain_context: bool = False
 
-    today = date.today()
-    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-    if age < 16:
-        return None, "You must be at least 16 years old to use Rehabify."
-    if dob > today:
-        return None, "That date doesn't look right. Please check and try again."
-    return dob, None
-
-
-def _parse_email(raw: str) -> tuple[str | None, str | None]:
-    text = raw.strip()
-    if text.lower() in {"skip", "none", "no", "n/a", "na"}:
-        return "", None
-    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
-        return text.lower(), None
-    return None, "Please enter a valid email address, or reply SKIP if you'd rather not share one."
-
-
-def _parse_gender(raw: str) -> tuple[str | None, str | None]:
-    text = raw.strip().lower()
-    mapping = {
-        "male": "male",
-        "m": "male",
-        "man": "male",
-        "female": "female",
-        "f": "female",
-        "woman": "female",
-        "prefer not to say": "prefer_not_to_say",
-        "prefer not": "prefer_not_to_say",
-        "no": "prefer_not_to_say",
-    }
-    if text in mapping:
-        return mapping[text], None
-    return None, "Please reply with male, female, or prefer not to say."
-
-
-def _parse_consultation_pref(raw: str) -> tuple[str | None, str | None]:
-    text = raw.strip().lower()
-    if any(w in text for w in ("virtual", "online", "video", "tele", "call")):
-        return "virtual", None
-    if any(w in text for w in ("home", "in-person", "in person", "visit", "house")):
-        return "in_person", None
-    if any(w in text for w in ("either", "both", "any", "doesn't matter", "doesnt matter")):
-        return "either", None
-    return None, "Would you prefer virtual (video), in-person (home visit), or either works for you?"
-
-
-def _parse_phone_confirm(raw: str, expected: str) -> tuple[bool | None, str | None]:
-    text = raw.strip().lower()
-    if YES_RE.match(text) or text == expected.lower().replace("+", ""):
-        return True, None
-    if NO_RE.match(text):
-        return False, "No problem — please type the correct WhatsApp number including country code (e.g. +234...)."
-    digits = re.sub(r"\D", "", raw)
-    if len(digits) >= 10:
-        return True, None
-    return None, f"Is {expected} the correct number for WhatsApp? Please reply YES or type the correct number."
-
-
-def _parse_severity(raw: str) -> tuple[int | None, str | None]:
-    match = re.search(r"\b(10|[0-9])\b", raw.strip())
-    if not match:
-        return None, "Please give a number from 1 to 10."
-    value = int(match.group(1))
-    if 1 <= value <= 10:
-        return value, None
-    return None, "Please give a number from 1 to 10."
-
-
-PROFILE_STEPS: list[StepDef] = [
-    StepDef("profile_first_name", "What is your first name?", "first_name", "profile"),
-    StepDef("profile_last_name", "And your last name?", "last_name", "profile"),
-    StepDef(
-        "profile_gender",
-        "How do you identify — male, female, or would you prefer not to say?",
-        "gender",
-        "profile",
-    ),
-    StepDef(
-        "profile_dob",
-        "What is your date of birth? (DD/MM/YYYY)",
-        "date_of_birth",
-        "profile",
-    ),
-    StepDef(
-        "profile_email",
-        "What is your email address? We will send your booking confirmation there. Reply SKIP if you'd rather not.",
-        "email",
-        "profile",
-    ),
-    StepDef("profile_country", "Which country are you currently in?", "country", "profile"),
-    StepDef("profile_state", "Which state?", "state", "profile"),
-    StepDef("profile_city", "Which city or area within that state?", "city", "profile"),
-    StepDef(
-        "profile_phone_confirm",
-        "Confirm your WhatsApp number — is it {phone}?",
-        "phone_confirmed",
-        "profile",
-    ),
-    StepDef(
-        "profile_consultation_preference",
-        "How would you prefer to speak with your specialist — virtual, in-person, or either works for you?",
-        "consultation_preference",
-        "profile",
-    ),
-]
 
 CLINICAL_STEPS: list[StepDef] = [
     StepDef(
@@ -368,33 +281,208 @@ FUNCTIONAL_STEPS: list[StepDef] = [
     ),
 ]
 
+RED_FLAG_STEPS: list[RedFlagStep] = [
+    RedFlagStep(
+        "red_flag_bladder_bowel",
+        "Have you had any loss of control of your bladder or bowel — even slightly — since this started?",
+        "bladder_bowel",
+        "cauda_equina",
+        "emergency",
+        "Please go to the nearest hospital immediately. This cannot wait.",
+        requires_pain_context=True,
+    ),
+    RedFlagStep(
+        "red_flag_unilateral_weakness",
+        "Have you noticed any sudden weakness on one side of your body, or difficulty speaking or swallowing?",
+        "unilateral_weakness_speech",
+        "stroke",
+        "emergency",
+        "Please call emergency services or go to hospital now. Do not wait.",
+    ),
+    RedFlagStep(
+        "red_flag_severe_headache",
+        "Have you had a sudden, severe headache — the worst of your life?",
+        "severe_headache",
+        "subarachnoid",
+        "emergency",
+        "Please go to the nearest hospital or emergency room now. Do not wait.",
+    ),
+    RedFlagStep(
+        "red_flag_weight_loss",
+        "Have you noticed any unexplained weight loss recently — without trying?",
+        "unexplained_weight_loss",
+        "malignancy",
+        "specialist",
+        "Based on what you've shared, I want a specialist to review this carefully before we book routine care. I'll make sure you're routed appropriately.",
+        requires_pain_context=True,
+    ),
+    RedFlagStep(
+        "red_flag_fever",
+        "Do you have a fever alongside this pain?",
+        "fever",
+        "infection",
+        "specialist",
+        "A fever with pain needs specialist review first. I'll make sure you're routed to the right care.",
+    ),
+    RedFlagStep(
+        "red_flag_trauma",
+        "Have you had a recent significant injury — a fall, accident, or impact?",
+        "recent_trauma",
+        "trauma",
+        "specialist",
+        "Got it — with a recent injury we need to be careful. Have you had any imaging (X-ray or scan) done for this?",
+    ),
+    RedFlagStep(
+        "red_flag_joint_inflammation",
+        "Is there any redness, swelling or warmth over the joint or area?",
+        "joint_heat_swelling",
+        "septic_arthritis",
+        "specialist",
+        "Redness, swelling or warmth can need urgent specialist review. I'll flag this for priority routing.",
+    ),
+    RedFlagStep(
+        "red_flag_cancer",
+        "Are you currently being treated for any form of cancer?",
+        "cancer_history",
+        "malignancy",
+        "emergency",
+        "Thank you for telling me. With cancer history, bone or joint pain needs specialist attention urgently — please seek care now and come back to me after.",
+    ),
+]
+
+CULTURAL_STEPS: list[StepDef] = [
+    StepDef(
+        "cultural_self_treatment",
+        "Before we go further — what have you already tried for this? For example rest, pain gel, balm, herbs, painkillers, or anything else?",
+        "self_treatment_tried",
+        "cultural",
+    ),
+    StepDef(
+        "cultural_prior_specialist",
+        "Have you seen a doctor or specialist about this before?",
+        "seen_specialist_before",
+        "cultural",
+    ),
+]
+
+RED_FLAG_BY_ID = {s.id: s for s in RED_FLAG_STEPS}
+
 STEP_BY_ID: dict[str, StepDef] = {
     s.id: s
-    for s in PROFILE_STEPS + CLINICAL_STEPS + PAIN_STEPS + NEURO_STEPS + FUNCTIONAL_STEPS
+    for s in CLINICAL_STEPS + PAIN_STEPS + NEURO_STEPS + FUNCTIONAL_STEPS + CULTURAL_STEPS
 }
 
-INTAKE_COMPLETE_STEP = "complaint_complete"
+INTAKE_COMPLETE_STEP = "cultural_complete"
+INITIAL_STEP = "start"
+OLD_FLOW_STEPS = {
+    "consent_pending",
+    "profile_first_name",
+    "profile_last_name",
+    "profile_gender",
+    "profile_dob",
+    "profile_email",
+    "profile_country",
+    "profile_state",
+    "profile_city",
+    "profile_phone_confirm",
+    "profile_consultation_preference",
+    "complaint_complete",
+}
+
+
+def parse_consent(raw: str) -> ConsentVerdict:
+    """Classify light-consent replies. Affirmative phrases like 'yes i consent' count as yes."""
+    text = raw.strip()
+    if not text:
+        return "unclear"
+
+    lowered = text.lower()
+
+    # Clear refusal takes priority when message is short / refusal-led
+    if CONSENT_NO_RE.search(lowered) and not CONSENT_YES_RE.search(lowered):
+        return "no"
+    if re.search(r"\b(don'?t|do not|won'?t)\s+(consent|agree|accept)\b", lowered):
+        return "no"
+
+    if CONSENT_YES_RE.search(lowered):
+        return "yes"
+
+    # Soft affirmatives that don't start the string
+    if re.search(r"\b(i\s+consent|i\s+agree|yes\s+i\s+do|yes\s+i\s+consent)\b", lowered):
+        return "yes"
+
+    return "unclear"
+
+
+def parse_yes_no(raw: str) -> ConsentVerdict:
+    text = raw.strip()
+    if not text:
+        return "unclear"
+    if YES_RE.search(text) and not CONSENT_NO_RE.search(text):
+        return "yes"
+    if NO_RE.search(text) and not CONSENT_YES_RE.search(text):
+        return "no"
+    # "a little", "slightly", "sometimes" treated as yes for red-flag safety
+    if re.search(r"\b(a little|slightly|sometimes|once|kind of|sort of)\b", text, re.I):
+        return "yes"
+    return "unclear"
 
 
 def default_intake_data() -> dict[str, Any]:
     return {
+        "flow_version": FLOW_VERSION,
         "profile": {},
         "clinical_history": {},
         "complaint": {},
+        "red_flags": {},
+        "cultural": {},
         "pathways": [],
         "pathway_queue": [],
+        "red_flag_triggered": False,
+        "red_flag_type": None,
     }
 
 
 def detect_pathways(text: str) -> list[str]:
-    has_pain = bool(PAIN_KEYWORDS.search(text))
-    has_neuro = bool(NEURO_KEYWORDS.search(text))
     pathways: list[str] = []
-    if has_pain:
+    if PAIN_KEYWORDS.search(text):
         pathways.append("pain")
-    if has_neuro:
+    if NEURO_KEYWORDS.search(text):
         pathways.append("neuro")
     return pathways
+
+
+def _parse_severity(raw: str) -> tuple[int | None, str | None]:
+    match = re.search(r"\b(10|[1-9])\b", raw.strip())
+    if not match:
+        return None, "Please give a number from 1 to 10."
+    value = int(match.group(1))
+    if 1 <= value <= 10:
+        return value, None
+    return None, "Please give a number from 1 to 10."
+
+
+def _parse_name(raw: str) -> tuple[str | None, str | None]:
+    text = raw.strip()
+    # Strip common prefixes like "my name is", "call me", "i am"
+    text = re.sub(
+        r"^(my name is|i am|i'm|call me|it's|it is)\s+",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    text = text.strip(" .,!?'\"")
+    if len(text) < 1:
+        return None, "What can I call you?"
+    if len(text) > 80:
+        return None, "Please share a shorter name I can use."
+    # Reject if it looks like a sentence about symptoms
+    if PAIN_KEYWORDS.search(text) or NEURO_KEYWORDS.search(text):
+        return None, "Thanks — first, what can I call you? Just your first name is fine."
+    # Take first token group as name (allow multi-word first names)
+    parts = text.split()
+    name = " ".join(parts[:3]).title()
+    return name, None
 
 
 def validate_step(step_id: str, raw: str, intake_data: dict[str, Any], phone: str) -> tuple[Any, str | None]:
@@ -402,103 +490,43 @@ def validate_step(step_id: str, raw: str, intake_data: dict[str, Any], phone: st
     if not text:
         return None, "I didn't catch that — could you try again?"
 
-    if step_id == "profile_gender":
-        return _parse_gender(text)
-    if step_id == "profile_dob":
-        dob, err = _parse_dob(text)
-        if err:
-            return None, err
-        return dob.isoformat(), None
-    if step_id == "profile_email":
-        return _parse_email(text)
-    if step_id == "profile_consultation_preference":
-        return _parse_consultation_pref(text)
-    if step_id == "profile_phone_confirm":
-        ok, err = _parse_phone_confirm(text, phone)
-        if err:
-            return None, err
-        return ok, None
+    if step_id == "ask_name":
+        return _parse_name(text)
+
     if step_id in {"complaint_pain_severity_now", "complaint_pain_severity_worst"}:
         return _parse_severity(text)
 
-    if step_id == "profile_first_name" and len(text) < 1:
-        return None, "Please tell me your first name."
-    if step_id == "profile_last_name" and len(text) < 1:
-        return None, "Please tell me your last name."
+    if step_id.startswith("red_flag_"):
+        verdict = parse_yes_no(text)
+        if verdict == "unclear":
+            return None, "Please reply YES or NO so I can keep you safe."
+        return verdict == "yes", None
 
     return text, None
 
 
-def prompt_for_step(step_id: str, intake_data: dict[str, Any], phone: str) -> str:
-    if step_id == "consent_pending":
-        return CONSENT_REMINDER
+def prompt_for_step(step_id: str, intake_data: dict[str, Any], phone: str, name: str | None = None) -> str:
+    if step_id == "ask_name":
+        return NAME_PROMPT
+    if step_id == "light_consent":
+        return LIGHT_CONSENT_TEMPLATE.format(name=name or "there")
     if step_id == "complaint_opening":
-        return (
-            "Now I want to understand what has been going on with you. "
-            "In your own words — what is the main thing that has been bothering you?"
-        )
+        return COMPLAINT_OPENING
     if step_id == "complaint_pathway_clarify":
-        return (
-            "Thanks for sharing that. Is it mainly pain or discomfort, "
-            "or more numbness, tingling, or weakness — or both?"
-        )
+        return PATHWAY_CLARIFY
+
+    if step_id in RED_FLAG_BY_ID:
+        return RED_FLAG_BY_ID[step_id].prompt
 
     step = STEP_BY_ID.get(step_id)
     if not step:
         return "Let's continue — could you answer my last question?"
-    prompt = step.prompt
-    if "{phone}" in prompt:
-        prompt = prompt.format(phone=phone)
-    return prompt
+    return step.prompt
 
 
-def _acknowledge(name: str | None, answer: str) -> str:
+def acknowledge(name: str | None) -> str:
     first = (name or "there").split()[0]
-    short = answer.strip()
-    if len(short) > 60:
-        short = short[:57] + "..."
     return f"Thanks, {first} — I've noted that."
-
-
-def next_step_id(current: str, intake_data: dict[str, Any]) -> str:
-    if current == "consent_pending":
-        return PROFILE_STEPS[0].id
-
-    for i, step in enumerate(PROFILE_STEPS):
-        if step.id == current:
-            return PROFILE_STEPS[i + 1].id if i + 1 < len(PROFILE_STEPS) else CLINICAL_STEPS[0].id
-
-    for i, step in enumerate(CLINICAL_STEPS):
-        if step.id == current:
-            return CLINICAL_STEPS[i + 1].id if i + 1 < len(CLINICAL_STEPS) else "complaint_opening"
-
-    if current == "complaint_opening":
-        pathways = intake_data.get("pathways") or []
-        queue = list(pathways)
-        intake_data["pathway_queue"] = queue
-        if not queue:
-            return "complaint_pathway_clarify"
-        return _first_pathway_step(queue[0])
-
-    if current == "complaint_pathway_clarify":
-        queue = intake_data.get("pathway_queue") or []
-        if not queue:
-            return "complaint_pathway_clarify"
-        return _first_pathway_step(queue[0])
-
-    if current in {s.id for s in PAIN_STEPS}:
-        return _advance_in_list(current, PAIN_STEPS, intake_data)
-
-    if current in {s.id for s in NEURO_STEPS}:
-        return _advance_in_list(current, NEURO_STEPS, intake_data)
-
-    if current == "complaint_functional_limitations":
-        return FUNCTIONAL_STEPS[1].id
-
-    if current == "complaint_patient_goal":
-        return INTAKE_COMPLETE_STEP
-
-    return INTAKE_COMPLETE_STEP
 
 
 def _first_pathway_step(pathway: str) -> str:
@@ -516,7 +544,8 @@ def _advance_in_list(current: str, steps: list[StepDef], intake_data: dict[str, 
         return steps[idx + 1].id
 
     queue: list[str] = list(intake_data.get("pathway_queue") or [])
-    if queue and queue[0] == ("pain" if steps is PAIN_STEPS else "neuro"):
+    current_pathway = "pain" if steps is PAIN_STEPS else "neuro" if steps is NEURO_STEPS else None
+    if queue and current_pathway and queue[0] == current_pathway:
         queue.pop(0)
         intake_data["pathway_queue"] = queue
     if queue:
@@ -524,17 +553,99 @@ def _advance_in_list(current: str, steps: list[StepDef], intake_data: dict[str, 
     return FUNCTIONAL_STEPS[0].id
 
 
+def next_step_id(current: str, intake_data: dict[str, Any]) -> str:
+    if current == "ask_name":
+        return "light_consent"
+    if current == "light_consent":
+        return "complaint_opening"
+
+    if current == "complaint_opening":
+        pathways = intake_data.get("pathways") or []
+        intake_data["pathway_queue"] = list(pathways)
+        if not pathways:
+            return "complaint_pathway_clarify"
+        return _first_pathway_step(pathways[0])
+
+    if current == "complaint_pathway_clarify":
+        queue = intake_data.get("pathway_queue") or []
+        if not queue:
+            return "complaint_pathway_clarify"
+        return _first_pathway_step(queue[0])
+
+    if current in {s.id for s in PAIN_STEPS}:
+        return _advance_in_list(current, PAIN_STEPS, intake_data)
+
+    if current in {s.id for s in NEURO_STEPS}:
+        return _advance_in_list(current, NEURO_STEPS, intake_data)
+
+    if current == "complaint_functional_limitations":
+        return FUNCTIONAL_STEPS[1].id
+
+    if current == "complaint_patient_goal":
+        return RED_FLAG_STEPS[0].id
+
+    for i, step in enumerate(RED_FLAG_STEPS):
+        if step.id == current:
+            return RED_FLAG_STEPS[i + 1].id if i + 1 < len(RED_FLAG_STEPS) else CLINICAL_STEPS[0].id
+
+    for i, step in enumerate(CLINICAL_STEPS):
+        if step.id == current:
+            return CLINICAL_STEPS[i + 1].id if i + 1 < len(CLINICAL_STEPS) else CULTURAL_STEPS[0].id
+
+    for i, step in enumerate(CULTURAL_STEPS):
+        if step.id == current:
+            return CULTURAL_STEPS[i + 1].id if i + 1 < len(CULTURAL_STEPS) else INTAKE_COMPLETE_STEP
+
+    return INTAKE_COMPLETE_STEP
+
+
 def is_intake_in_progress(step: str | None) -> bool:
     if not step:
         return True
-    return step not in {INTAKE_COMPLETE_STEP, "complete"}
+    return step not in {INTAKE_COMPLETE_STEP, "complete", "red_flag_stopped"}
 
 
 def section_for_step(step_id: str) -> str:
+    if step_id in RED_FLAG_BY_ID:
+        return "red_flags"
     if step_id in STEP_BY_ID:
         return STEP_BY_ID[step_id].section
-    if step_id.startswith("profile_"):
-        return "profile"
     if step_id.startswith("clinical_"):
         return "clinical_history"
+    if step_id.startswith("cultural_"):
+        return "cultural"
+    if step_id.startswith("complaint_"):
+        return "complaint"
+    if step_id in {"ask_name", "light_consent", "start"}:
+        return "profile"
     return "complaint"
+
+
+def complaint_suggests_back_or_neck(intake_data: dict[str, Any]) -> bool:
+    complaint = intake_data.get("complaint") or {}
+    blob = " ".join(str(v) for v in complaint.values()).lower()
+    return bool(re.search(r"\b(back|neck|spine|lumbar|cervical)\b", blob))
+
+
+def evaluate_red_flag_answer(
+    step_id: str,
+    answered_yes: bool,
+    intake_data: dict[str, Any],
+) -> tuple[bool, str | None, str | None]:
+    """Return (triggered, reply, flag_type)."""
+    step = RED_FLAG_BY_ID.get(step_id)
+    if not step or not answered_yes:
+        return False, None, None
+
+    if step.requires_pain_context and step.flag_type == "cauda_equina":
+        if not complaint_suggests_back_or_neck(intake_data):
+            # Still note the answer but don't fire cauda equina without back/neck context
+            return False, None, None
+
+    if step.flag_type == "septic_arthritis":
+        fever = (intake_data.get("red_flags") or {}).get("fever")
+        if fever is not True:
+            # Flag alone without fever → still specialist note, milder
+            return True, step.reply, step.flag_type
+
+    return True, step.reply, step.flag_type
