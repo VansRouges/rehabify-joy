@@ -45,9 +45,11 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     sync_db_on_startup: bool = False
 
-    session_ttl_seconds: int = 86400
-    max_history_turns: int = 15
+    session_ttl_seconds: int = 604800
+    max_history_turns: int = 12
     max_voice_seconds: int = 60
+    joy_default_brain: str = "gemini"
+    joy_language_polish: str = "off"
 
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""

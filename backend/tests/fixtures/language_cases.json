@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {"text": "My lower back has been hurting for two weeks.", "expect": "en"},
+    {"text": "Abeg my waist dey pain me well well.", "expect": "pcm"},
+    {"text": "Wetin dey pain me for my neck, I no fit sleep.", "expect": "pcm"},
+    {"text": "How you dey? Body just dey weak.", "expect": "pcm"},
+    {"text": "Pele, ara mi n dun ni ẹhin.", "expect": "yo"},
+    {"text": "Bawo ni, mo dupe, ehin mi n dun.", "expect": "yo"},
+    {"text": "Ndewo, kedu ihe mere? Ahu m na-afụ ụfụ.", "expect": "ig"},
+    {"text": "Biko ndewo, nwanne m, m na-enwe nsogbu.", "expect": "ig"},
+    {"text": "Sannu, jiki yana ciwo sosai.", "expect": "ha"},
+    {"text": "Na gode, yaya kake? Kirji yana ciwo.", "expect": "ha"}
+  ]
+}

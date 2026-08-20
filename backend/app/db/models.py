@@ -21,6 +21,10 @@ class Patient(Base):
     consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     intake_step: Mapped[str | None] = mapped_column(String(80), nullable=True)
     intake_data: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    language_preference: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    known_facts: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    conversation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    persona: Mapped[str] = mapped_column(String(32), default="patient", server_default="patient")
     region: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     ip_addresses: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
@@ -31,6 +35,7 @@ class Patient(Base):
 
     sessions: Mapped[list["ChatSession"]] = relationship(back_populates="patient")
     messages: Mapped[list["Message"]] = relationship(back_populates="patient")
+    audit_events: Mapped[list["AuditEvent"]] = relationship(back_populates="patient")
 
 
 class ChatSession(Base):
@@ -68,3 +73,18 @@ class Message(Base):
 
     session: Mapped["ChatSession"] = relationship(back_populates="messages")
     patient: Mapped["Patient"] = relationship(back_populates="messages")
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False, index=True
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    patient: Mapped["Patient"] = relationship(back_populates="audit_events")

@@ -56,6 +56,7 @@ def default_session_state() -> dict[str, Any]:
         "mode": "triage",
         "history": [],
         "triage_complete": False,
+        "language": "en",
     }
 
 

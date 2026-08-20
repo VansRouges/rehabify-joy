@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChatSession, Message, Patient
+from app.memory.facts import digest_from_facts, facts_from_intake, get_fact
 from app.services.triage_flow import (
     COMPLAINT_OPENING,
     CULTURAL_COMPLETE_MSG,
@@ -150,8 +152,30 @@ async def _save_patient_intake(
     profile = intake_data.get("profile") or {}
     if profile.get("first_name"):
         patient.display_name = str(profile["first_name"]).strip()
+    facts_from_intake(patient)
+    if step in {INTAKE_COMPLETE_STEP, "complete"}:
+        digest = digest_from_facts(patient)
+        if digest:
+            patient.conversation_summary = digest[:2000]
+            flag_modified(patient, "conversation_summary")
     await db.commit()
     await db.refresh(patient)
+
+
+def _apply_known_intake_skips(patient: Patient, intake_data: dict[str, Any]) -> None:
+    """Jump past name/consent when those facts already exist."""
+    name = get_fact(patient, "name")
+    if not name and patient.display_name and patient.display_name not in {"WhatsApp User", ""}:
+        name = patient.display_name.split()[0]
+    if name:
+        intake_data.setdefault("profile", {})["first_name"] = name
+        if not patient.intake_step or patient.intake_step in {"start", "ask_name"}:
+            patient.intake_step = "light_consent"
+    if patient.consent_given or get_fact(patient, "consent"):
+        if patient.intake_step in {None, "start", "ask_name", "light_consent"}:
+            patient.intake_step = "complaint_opening"
+    if get_fact(patient, "intake_complete"):
+        patient.intake_step = INTAKE_COMPLETE_STEP
 
 
 def _store_field(intake_data: dict[str, Any], step_id: str, value: Any) -> None:
@@ -230,6 +254,9 @@ async def process_intake_message(
     if _needs_flow_reset(patient, intake_data):
         intake_data = _reset_for_new_flow(patient)
         await _save_patient_intake(db, patient, step=INITIAL_STEP, intake_data=intake_data)
+
+    _apply_known_intake_skips(patient, intake_data)
+    intake_data = _ensure_intake(patient)
 
     step = patient.intake_step or INITIAL_STEP
     name = _patient_first_name(patient, intake_data)
@@ -401,6 +428,9 @@ async def process_intake_message(
 
 
 def should_run_intake(patient: Patient) -> bool:
+    facts = patient.known_facts if isinstance(patient.known_facts, dict) else {}
+    if facts.get("intake_complete"):
+        return False
     intake_data = patient.intake_data if isinstance(patient.intake_data, dict) else {}
     if intake_data.get("flow_version") != FLOW_VERSION:
         return True

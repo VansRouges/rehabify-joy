@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.db.database import get_db
 from app.db.models import ChatSession, Message
 from app.services.chat_service import process_message
-from app.services.gemini import GeminiError
+from app.llm.protocol import LLMError as GeminiError
 from app.services.storage import upload_audio
 from app.services.transcription import transcribe_audio
 from app.services.session import default_session_state, save_session_state

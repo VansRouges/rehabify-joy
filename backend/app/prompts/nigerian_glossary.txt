@@ -1,0 +1,11 @@
+Physio = physiotherapy specialist who treats movement, pain, and recovery.
+MSK = musculoskeletal (joints, bones, muscles).
+Red flag = a symptom that needs a hospital or doctor immediately, not physio first.
+Awadoc / Nora = doctor service Joy routes to when the problem is not physiotherapy.
+Home visit = physio comes to the patient's house.
+Virtual assessment = video consultation.
+Pidgin: "body dey pain me" = I am in pain; "I no fit walk" = I cannot walk; "abeg" = please.
+Yoruba: "ara mi n dun" = my body hurts; "pele" = sorry / take it easy.
+Igbo: "ahu m na-afụ ụfụ" = my body is paining; "ndewo" = hello.
+Hausa: "jiki yana ciwo" = the body is paining; "sannu" = hello.
+Never diagnose. Never name a drug or dose. Never invent a booking as paid.

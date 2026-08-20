@@ -5,17 +5,18 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ChatSession, Message, Patient
-from app.services.flow_engine import FlowResult, process_intake_message, should_run_intake
-from app.services.gemini import GeminiError, generate_reply
-from app.services.safety import check_off_topic, check_red_flags
-from app.services.session import (
-    default_session_state,
-    get_session_state,
-    save_session_state,
-    trim_history,
-)
+from app.agent.runtime import run_agent
 from app.config import get_settings
+from app.db.models import ChatSession, Message, Patient
+from app.language.detect import detect_language
+from app.llm.protocol import LLMError
+from app.memory.audit import write_audit
+from app.memory.compiler import compile_context
+from app.memory.facts import facts_from_intake
+from app.memory.hydrate import hydrate_session_state, maybe_compact_summary, persist_working_memory
+from app.services.flow_engine import FlowResult, process_intake_message, should_run_intake
+from app.services.safety import check_off_topic, check_red_flags
+from app.services.session import default_session_state
 
 settings = get_settings()
 
@@ -37,25 +38,6 @@ class ChatResult:
         self.red_flag_triggered = red_flag_triggered
         self.off_topic = off_topic
         self.intake_complete = intake_complete
-
-
-def _session_redis_key(patient_id: str, session_id: str) -> str:
-    return f"joy:session:{patient_id}:{session_id}"
-
-
-async def _load_or_create_state(patient_id: str, session_id: str) -> dict:
-    key = _session_redis_key(patient_id, session_id)
-    state = await get_session_state(key)
-    if state is None:
-        state = default_session_state()
-        state["patient_id"] = patient_id
-        await save_session_state(key, state)
-    return state
-
-
-async def _save_state(patient_id: str, session_id: str, state: dict) -> None:
-    state["history"] = trim_history(state["history"], settings.max_history_turns)
-    await save_session_state(_session_redis_key(patient_id, session_id), state)
 
 
 async def _persist_exchange(
@@ -120,6 +102,13 @@ def _flow_to_chat_result(flow: FlowResult) -> ChatResult:
     )
 
 
+def _apply_language(patient: Patient, user_text: str) -> str:
+    guess = detect_language(user_text, fallback=patient.language_preference)
+    if guess.confidence == "high" or not patient.language_preference:
+        patient.language_preference = guess.code
+    return patient.language_preference or "en"
+
+
 async def process_message(
     db: AsyncSession,
     patient: Patient,
@@ -136,6 +125,8 @@ async def process_message(
 
     sid = session_id or str(uuid.uuid4())
     pid = str(patient.id)
+    language = _apply_language(patient, user_text)
+    facts_from_intake(patient)
 
     if should_run_intake(patient):
         flow = await process_intake_message(
@@ -147,49 +138,62 @@ async def process_message(
             audio_url=audio_url,
             channel=channel,
         )
+        facts_from_intake(patient)
+        await db.commit()
         return _flow_to_chat_result(flow)
 
-    # Free-text red-flag catch for post-intake conversation
-    red_flag = check_red_flags(user_text)
+    red_flag = check_red_flags(user_text, language)
     if red_flag.blocked:
         reply = red_flag.reply or ""
+        await write_audit(
+            db,
+            patient_id=patient.id,
+            session_id=sid,
+            kind="safety",
+            payload={"flag_type": red_flag.flag_type, "language": language},
+        )
         await _persist_exchange(
             db, patient, sid, user_text, reply,
             red_flag_triggered=True, message_type=message_type, audio_url=audio_url,
         )
-        state = await _load_or_create_state(pid, sid)
+        state = await hydrate_session_state(db, patient, sid)
         state["history"].append({"role": "user", "content": user_text})
         state["history"].append({"role": "assistant", "content": reply})
-        await _save_state(pid, sid, state)
+        state["language"] = language
+        await persist_working_memory(pid, sid, state)
         return ChatResult(sid, reply, "triage", red_flag_triggered=True)
 
-    off_topic = check_off_topic(user_text)
+    off_topic = check_off_topic(user_text, language)
     if off_topic.blocked:
         reply = off_topic.reply or ""
         await _persist_exchange(
             db, patient, sid, user_text, reply,
             message_type=message_type, audio_url=audio_url,
         )
-        state = await _load_or_create_state(pid, sid)
+        state = await hydrate_session_state(db, patient, sid)
         state["history"].append({"role": "user", "content": user_text})
         state["history"].append({"role": "assistant", "content": reply})
-        await _save_state(pid, sid, state)
+        state["language"] = language
+        await persist_working_memory(pid, sid, state)
         return ChatResult(sid, reply, "triage", off_topic=True)
 
-    state = await _load_or_create_state(pid, sid)
+    state = await hydrate_session_state(db, patient, sid)
+    compiled = compile_context(patient, state.get("history") or [], max_turns=settings.max_history_turns)
 
     try:
-        reply = await generate_reply(state["history"], user_text)
-    except GeminiError as exc:
+        reply = await run_agent(db, patient, compiled, user_text, sid)
+    except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     state["history"].append({"role": "user", "content": user_text})
     state["history"].append({"role": "assistant", "content": reply})
-    await _save_state(pid, sid, state)
+    state["language"] = language
+    maybe_compact_summary(patient, state["history"])
+    await persist_working_memory(pid, sid, state)
 
     await _persist_exchange(
         db, patient, sid, user_text, reply,
         message_type=message_type, audio_url=audio_url,
     )
 
-    return ChatResult(sid, reply, state.get("mode", "triage"))
+    return ChatResult(sid, reply, state.get("mode") or default_session_state()["mode"])
