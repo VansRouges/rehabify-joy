@@ -5,7 +5,7 @@ import { ChatInput } from "./ChatInput";
 import { MessageBubble, TypingIndicator } from "./MessageBubble";
 import { OnboardingModal } from "./OnboardingModal";
 import { Sidebar } from "./Sidebar";
-import { getSession, listSessions, sendMessage, sendVoiceMessage } from "@/lib/api";
+import { getSession, listSessions, sendMessage, sendVoiceMessage, startThread } from "@/lib/api";
 import { getStoredPatient } from "@/lib/patient";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import type { ChatMessage, SessionSummary } from "@/lib/types";
@@ -135,11 +135,31 @@ export function ChatApp() {
     }
   };
 
-  const handleNewChat = () => {
-    setActiveSessionId(null);
-    setMessages([]);
+  const handleNewChat = async () => {
     setInput("");
     setError(null);
+    setLoading(true);
+    try {
+      const started = await startThread();
+      setActiveSessionId(started.id);
+      if (started.opening_message) {
+        setMessages([
+          {
+            id: generateId(),
+            role: "assistant",
+            content: started.opening_message,
+          },
+        ]);
+      } else {
+        setMessages([]);
+      }
+      await refreshSessions();
+    } catch {
+      setActiveSessionId(null);
+      setMessages([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSend = async () => {

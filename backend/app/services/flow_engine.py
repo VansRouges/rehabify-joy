@@ -24,7 +24,6 @@ from app.services.triage_flow import (
     NAME_PROMPT,
     OLD_FLOW_STEPS,
     RED_FLAG_BY_ID,
-    acknowledge,
     default_intake_data,
     detect_pathways,
     evaluate_red_flag_answer,
@@ -249,6 +248,8 @@ async def process_intake_message(
 ) -> FlowResult:
     user_text = user_text.strip()
     sid = session_id or str(uuid.uuid4())
+    if patient.intake_session_id is None:
+        patient.intake_session_id = uuid.UUID(sid)
     intake_data = _ensure_intake(patient)
 
     if _needs_flow_reset(patient, intake_data):
@@ -348,7 +349,7 @@ async def process_intake_message(
     if step == "complaint_opening":
         _store_field(intake_data, step, user_text)
         nxt = next_step_id(step, intake_data)
-        reply = f"{acknowledge(name)}\n\n{prompt_for_step(nxt, intake_data, patient.phone_number, name=name)}"
+        reply = prompt_for_step(nxt, intake_data, patient.phone_number, name=name)
         await _save_patient_intake(db, patient, step=nxt, intake_data=intake_data)
         return await _reply(
             db, patient, sid, user_text, reply, nxt,
@@ -366,7 +367,7 @@ async def process_intake_message(
         intake_data["pathways"] = pathways
         intake_data["pathway_queue"] = list(pathways)
         nxt = next_step_id(step, intake_data)
-        reply = f"{acknowledge(name)}\n\n{prompt_for_step(nxt, intake_data, patient.phone_number, name=name)}"
+        reply = prompt_for_step(nxt, intake_data, patient.phone_number, name=name)
         await _save_patient_intake(db, patient, step=nxt, intake_data=intake_data)
         return await _reply(
             db, patient, sid, user_text, reply, nxt,
@@ -403,23 +404,17 @@ async def process_intake_message(
             )
 
     nxt = next_step_id(step, intake_data)
-    transition = ""
     if step == CULTURAL_STEPS[-1].id:
         nxt = INTAKE_COMPLETE_STEP
-        transition = f"\n\n{CULTURAL_COMPLETE_MSG}"
 
     if nxt == INTAKE_COMPLETE_STEP:
-        reply = f"{acknowledge(name)}{transition}"
         await _save_patient_intake(db, patient, step=INTAKE_COMPLETE_STEP, intake_data=intake_data)
         return await _reply(
-            db, patient, sid, user_text, reply, INTAKE_COMPLETE_STEP,
+            db, patient, sid, user_text, CULTURAL_COMPLETE_MSG, INTAKE_COMPLETE_STEP,
             message_type=message_type, audio_url=audio_url, intake_complete=True,
         )
 
-    reply = (
-        f"{acknowledge(name)}{transition}\n\n"
-        f"{prompt_for_step(nxt, intake_data, patient.phone_number, name=name)}"
-    )
+    reply = prompt_for_step(nxt, intake_data, patient.phone_number, name=name)
     await _save_patient_intake(db, patient, step=nxt, intake_data=intake_data)
     return await _reply(
         db, patient, sid, user_text, reply, nxt,
@@ -427,15 +422,64 @@ async def process_intake_message(
     )
 
 
-def should_run_intake(patient: Patient) -> bool:
+def patient_needs_intake(patient: Patient) -> bool:
+    """Whether this patient still has an unfinished intake questionnaire."""
     facts = patient.known_facts if isinstance(patient.known_facts, dict) else {}
     if facts.get("intake_complete"):
+        return False
+    if patient.intake_step in {INTAKE_COMPLETE_STEP, "complete"}:
         return False
     intake_data = patient.intake_data if isinstance(patient.intake_data, dict) else {}
     if intake_data.get("flow_version") != FLOW_VERSION:
         return True
     if patient.intake_step in {"red_flag_stopped"}:
         return True
-    if patient.intake_step in {INTAKE_COMPLETE_STEP, "complete"}:
-        return False
     return is_intake_in_progress(patient.intake_step) or not patient.consent_given
+
+
+def session_owns_intake(
+    *,
+    needs_intake: bool,
+    intake_session_id: uuid.UUID | str | None,
+    current_session_id: str,
+    earliest_session_id: str | None,
+    channel: str = "web",
+) -> tuple[bool, str]:
+    """Decide if THIS thread should run the scripted intake.
+
+    Live questionnaire stays on one thread. Other threads talk normally
+    with patient memory. WhatsApp is a single chat, so it always keeps intake.
+    """
+    current = str(current_session_id)
+    if not needs_intake:
+        return False, str(intake_session_id) if intake_session_id else current
+
+    if channel == "whatsapp":
+        return True, current
+
+    if intake_session_id is not None:
+        owner = str(intake_session_id)
+        return owner == current, owner
+
+    # Legacy patients: pin unfinished intake to the first thread, not a new one.
+    if earliest_session_id is None:
+        return True, current
+    owner = str(earliest_session_id)
+    return owner == current, owner
+
+
+def pending_intake_prompt(patient: Patient) -> str | None:
+    """The unanswered intake question, if the questionnaire is still open."""
+    if not patient_needs_intake(patient):
+        return None
+    step = patient.intake_step or INITIAL_STEP
+    if step in {INTAKE_COMPLETE_STEP, "complete", "red_flag_stopped"}:
+        return None
+    intake_data = _ensure_intake(patient)
+    name = _patient_first_name(patient, intake_data)
+    return prompt_for_step(step, intake_data, patient.phone_number, name=name)
+
+
+def should_run_intake(patient: Patient) -> bool:
+    """Patient-level check. Prefer session_owns_intake for chat routing."""
+    return patient_needs_intake(patient)

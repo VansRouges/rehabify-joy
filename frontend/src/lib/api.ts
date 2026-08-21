@@ -65,6 +65,10 @@ export async function sendVoiceMessage(
   return request<ChatResponse>("/api/chat/voice", { method: "POST", body: form });
 }
 
+export async function startThread(): Promise<SessionSummary> {
+  return request<SessionSummary>("/api/chat/sessions", { method: "POST" });
+}
+
 export async function listSessions(): Promise<SessionSummary[]> {
   return request<SessionSummary[]>("/api/chat/sessions");
 }

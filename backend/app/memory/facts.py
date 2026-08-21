@@ -102,6 +102,12 @@ def digest_from_facts(patient: Patient) -> str:
     lang = facts.get("language") or patient.language_preference
     if lang:
         parts.append(f"language {lang}")
+    intake = patient.intake_data if isinstance(patient.intake_data, dict) else {}
+    complaint = intake.get("complaint") or {}
+    for key in ("pain_location", "pain_severity_now", "patient_goal"):
+        value = complaint.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}: {value}")
     custom = facts.get("custom")
     if isinstance(custom, dict):
         extras = [f"{k}={v}" for k, v in list(custom.items())[:6]]

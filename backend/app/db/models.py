@@ -26,6 +26,7 @@ class Patient(Base):
     conversation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     persona: Mapped[str] = mapped_column(String(32), default="patient", server_default="patient")
     region: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    intake_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     last_ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     ip_addresses: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

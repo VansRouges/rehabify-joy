@@ -11,11 +11,10 @@ from app.api.patients import get_patient_or_404
 from app.config import get_settings
 from app.db.database import get_db
 from app.db.models import ChatSession, Message
-from app.services.chat_service import process_message
+from app.services.chat_service import process_message, start_thread
 from app.llm.protocol import LLMError as GeminiError
 from app.services.storage import upload_audio
 from app.services.transcription import transcribe_audio
-from app.services.session import default_session_state, save_session_state
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 settings = get_settings()
@@ -46,6 +45,7 @@ class SessionSummary(BaseModel):
     mode: str
     created_at: datetime
     updated_at: datetime
+    opening_message: str | None = None
 
 
 class MessageOut(BaseModel):
@@ -161,14 +161,7 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionSummary:
     patient = await get_patient_or_404(patient_id, db)
-    session = ChatSession(patient_id=patient.id, mode="triage")
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
-
-    state = default_session_state()
-    state["patient_id"] = patient_id
-    await save_session_state(f"joy:session:{patient_id}:{session.id}", state)
+    session, opening = await start_thread(db, patient)
 
     return SessionSummary(
         id=str(session.id),
@@ -176,6 +169,7 @@ async def create_session(
         mode=session.mode,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        opening_message=opening,
     )
 
 

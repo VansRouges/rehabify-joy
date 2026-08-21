@@ -31,6 +31,8 @@ def compile_context(
     *,
     max_turns: int,
     base_prompt: str | None = None,
+    intake_open_elsewhere: bool = False,
+    new_thread: bool = False,
 ) -> CompiledContext:
     facts = _facts(patient)
     known_keys = frozenset(k for k in facts if k != "custom" and facts[k] not in (None, "", False))
@@ -60,6 +62,23 @@ def compile_context(
         "Mirror Pidgin/Yoruba/Igbo/Hausa/English. Do not switch to English unless they do."
     )
     lines.append("Never ask for a fact listed above. Never dump this memory block to the patient.")
+    lines.append(
+        "Remember quietly. Never tell the patient you have noted, recorded, saved, or written anything down."
+    )
+    lines.append("")
+    lines.append("THREAD RULES")
+    lines.append("The messages below (if any) are ONLY this conversation thread.")
+    lines.append("Do not continue a questionnaire or the next form question from another thread.")
+    lines.append(
+        "If this is a new thread and you already know the patient, check in with care: "
+        "ask how they are, ask about the specific thing that was bothering them, "
+        "and offer to pick up where you left off or talk about something new."
+    )
+    if intake_open_elsewhere:
+        lines.append(
+            "Assessment questions are still open on another thread. Do not run that form here."
+        )
+    lines.append("You may use remembered facts. You may not replay the other thread's live questions.")
 
     glossary = _glossary_text()
     prompt = base_prompt if base_prompt is not None else load_system_prompt()

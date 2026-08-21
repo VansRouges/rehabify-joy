@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    sync_db_on_startup: bool = False
+    sync_db_on_startup: bool = True
 
     session_ttl_seconds: int = 604800
     max_history_turns: int = 12

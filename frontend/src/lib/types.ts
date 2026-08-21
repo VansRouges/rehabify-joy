@@ -30,6 +30,7 @@ export interface SessionSummary {
   mode: string;
   created_at: string;
   updated_at: string;
+  opening_message?: string | null;
 }
 
 export interface SessionDetail {

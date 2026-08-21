@@ -12,36 +12,33 @@ from typing import Any, Literal
 
 FLOW_VERSION = 2
 
-NAME_PROMPT = "Hello! What can I call you?"
+NAME_PROMPT = "Hi, I'm Joy. What can I call you?"
 
 LIGHT_CONSENT_TEMPLATE = (
-    "Nice to meet you {name}! My name is Joy. I am here to help you figure out "
-    "what has been going on and connect you with the right specialist. "
-    "Just so you know — anything you share with me is private and only used to "
-    "get you the right care. Reply YES to continue."
+    "Nice to meet you, {name}. I'm Joy — I'll help you figure out what's been "
+    "going on and get you to the right specialist. What you share stays between "
+    "us and is only used for your care. Reply YES when you're ready."
 )
 
 LIGHT_CONSENT_BLOCKED = (
-    "I can't continue until you consent. Your privacy matters — I only use what "
-    "you share to get you the right care.\n\n"
-    "Please reply YES (for example: yes, yes I consent, or yes I do) when you're "
-    "ready to continue."
+    "I need your yes before we go further — your privacy matters, and I only "
+    "use what you share to get you the right care.\n\n"
+    "When you're ready, reply YES (for example: yes, or yes I do)."
 )
 
 COMPLAINT_OPENING = (
-    "Great — I'm here to help. Tell me, what has been going on? "
+    "I'm here with you. Tell me — what has been going on? "
     "What is the main thing that has been bothering you?"
 )
 
 PATHWAY_CLARIFY = (
-    "Thanks for sharing that. Is it mainly pain or discomfort, "
+    "I hear you. Is it mainly pain or discomfort, "
     "or more numbness, tingling, or weakness — or both?"
 )
 
 CULTURAL_COMPLETE_MSG = (
-    "Thank you for sharing all of that with me — I know some of those questions "
-    "were detailed. Next I'll summarise what I've understood and recommend the "
-    "best next step for you."
+    "Thank you for trusting me with all of that — I know some of those questions "
+    "were a lot. Let me walk you through what I think is the best next step."
 )
 
 PAIN_KEYWORDS = re.compile(
@@ -522,11 +519,6 @@ def prompt_for_step(step_id: str, intake_data: dict[str, Any], phone: str, name:
     if not step:
         return "Let's continue — could you answer my last question?"
     return step.prompt
-
-
-def acknowledge(name: str | None) -> str:
-    first = (name or "there").split()[0]
-    return f"Thanks, {first} — I've noted that."
 
 
 def _first_pathway_step(pathway: str) -> str:

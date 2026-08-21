@@ -14,9 +14,22 @@ from app.memory.audit import write_audit
 from app.memory.compiler import compile_context
 from app.memory.facts import facts_from_intake
 from app.memory.hydrate import hydrate_session_state, maybe_compact_summary, persist_working_memory
-from app.services.flow_engine import FlowResult, process_intake_message, should_run_intake
+from app.services.flow_engine import (
+    FlowResult,
+    patient_needs_intake,
+    pending_intake_prompt,
+    process_intake_message,
+    session_owns_intake,
+)
 from app.services.safety import check_off_topic, check_red_flags
 from app.services.session import default_session_state
+from app.services.thread_opening import (
+    build_check_in,
+    classify_thread_choice,
+    is_returning_patient,
+    resume_lead_in,
+    still_hurting_nudge,
+)
 
 settings = get_settings()
 
@@ -109,6 +122,143 @@ def _apply_language(patient: Patient, user_text: str) -> str:
     return patient.language_preference or "en"
 
 
+async def _earliest_session_id(db: AsyncSession, patient: Patient) -> str | None:
+    result = await db.execute(
+        select(ChatSession.id)
+        .where(ChatSession.patient_id == patient.id)
+        .order_by(ChatSession.created_at.asc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return str(row) if row else None
+
+
+async def _should_run_intake_here(
+    db: AsyncSession,
+    patient: Patient,
+    session_id: str,
+    *,
+    channel: str,
+) -> bool:
+    needs = patient_needs_intake(patient)
+    earliest = await _earliest_session_id(db, patient)
+    run, owner = session_owns_intake(
+        needs_intake=needs,
+        intake_session_id=patient.intake_session_id,
+        current_session_id=session_id,
+        earliest_session_id=earliest,
+        channel=channel,
+    )
+    if owner:
+        owner_uuid = uuid.UUID(owner)
+        if patient.intake_session_id != owner_uuid:
+            patient.intake_session_id = owner_uuid
+    return run
+
+
+def _is_fresh_thread(history: list) -> bool:
+    return not any(item.get("role") == "user" for item in history or [])
+
+
+async def _count_sessions(db: AsyncSession, patient: Patient) -> int:
+    result = await db.execute(select(ChatSession.id).where(ChatSession.patient_id == patient.id))
+    return len(result.scalars().all())
+
+
+async def start_thread(db: AsyncSession, patient: Patient) -> tuple[ChatSession, str | None]:
+    """Open a new web thread. Returning patients get a caring check-in first."""
+    facts_from_intake(patient)
+    existing = await _count_sessions(db, patient)
+    session = ChatSession(patient_id=patient.id, mode="companion")
+    db.add(session)
+    await db.flush()
+
+    opening: str | None = None
+    state = default_session_state()
+    state["patient_id"] = str(patient.id)
+    state["mode"] = "companion"
+
+    if is_returning_patient(patient, existing):
+        opening = build_check_in(patient)
+        session.title = "Check-in"
+        db.add(
+            Message(
+                session_id=session.id,
+                patient_id=patient.id,
+                direction="out",
+                content=opening,
+                message_type="text",
+            )
+        )
+        state["history"] = [{"role": "assistant", "content": opening}]
+        state["awaiting_thread_choice"] = True
+
+    await persist_working_memory(str(patient.id), str(session.id), state)
+    await db.commit()
+    await db.refresh(session)
+    return session, opening
+
+
+async def _resume_questionnaire(
+    db: AsyncSession,
+    patient: Patient,
+    session_id: str,
+    user_text: str,
+    *,
+    message_type: str = "text",
+    audio_url: str | None = None,
+) -> ChatResult:
+    patient.intake_session_id = uuid.UUID(session_id)
+    question = pending_intake_prompt(patient)
+    if question:
+        reply = f"{resume_lead_in(patient)}\n\n{question}"
+        mode = "triage"
+    else:
+        reply = (
+            f"{resume_lead_in(patient)} We already finished the assessment questions. "
+            "Tell me how you've been managing, and we'll take it from there."
+        )
+        mode = "companion"
+    await _persist_exchange(
+        db, patient, session_id, user_text, reply,
+        message_type=message_type, audio_url=audio_url,
+    )
+    state = await hydrate_session_state(db, patient, session_id)
+    state["awaiting_thread_choice"] = False
+    state["history"].append({"role": "user", "content": user_text})
+    state["history"].append({"role": "assistant", "content": reply})
+    state["mode"] = mode
+    await persist_working_memory(str(patient.id), session_id, state)
+    return ChatResult(session_id, reply, mode)
+
+
+async def _reply_and_remember(
+    db: AsyncSession,
+    patient: Patient,
+    session_id: str,
+    user_text: str,
+    reply: str,
+    state: dict,
+    *,
+    message_type: str = "text",
+    audio_url: str | None = None,
+    awaiting: bool | None = None,
+    mode: str = "companion",
+) -> ChatResult:
+    if awaiting is not None:
+        state["awaiting_thread_choice"] = awaiting
+    state["history"] = list(state.get("history") or [])
+    state["history"].append({"role": "user", "content": user_text})
+    state["history"].append({"role": "assistant", "content": reply})
+    state["mode"] = mode
+    await persist_working_memory(str(patient.id), session_id, state)
+    await _persist_exchange(
+        db, patient, session_id, user_text, reply,
+        message_type=message_type, audio_url=audio_url,
+    )
+    return ChatResult(session_id, reply, mode)
+
+
 async def process_message(
     db: AsyncSession,
     patient: Patient,
@@ -128,7 +278,7 @@ async def process_message(
     language = _apply_language(patient, user_text)
     facts_from_intake(patient)
 
-    if should_run_intake(patient):
+    if await _should_run_intake_here(db, patient, sid, channel=channel):
         flow = await process_intake_message(
             db,
             patient,
@@ -178,7 +328,42 @@ async def process_message(
         return ChatResult(sid, reply, "triage", off_topic=True)
 
     state = await hydrate_session_state(db, patient, sid)
-    compiled = compile_context(patient, state.get("history") or [], max_turns=settings.max_history_turns)
+    state["language"] = language
+    history = state.get("history") or []
+    awaiting = bool(state.get("awaiting_thread_choice"))
+    existing_count = await _count_sessions(db, patient)
+    returning = is_returning_patient(patient, existing_count)
+    fresh = _is_fresh_thread(history)
+    choice = classify_thread_choice(user_text)
+
+    if channel == "web" and (awaiting or (returning and fresh)):
+        if choice == "pick_up":
+            return await _resume_questionnaire(
+                db, patient, sid, user_text,
+                message_type=message_type, audio_url=audio_url,
+            )
+        if choice == "not_better":
+            return await _reply_and_remember(
+                db, patient, sid, user_text, still_hurting_nudge(patient), state,
+                message_type=message_type, audio_url=audio_url, awaiting=True,
+            )
+        if choice == "new_topic":
+            state["awaiting_thread_choice"] = False
+        elif awaiting and choice == "other":
+            state["awaiting_thread_choice"] = False
+        else:
+            return await _reply_and_remember(
+                db, patient, sid, user_text, build_check_in(patient), state,
+                message_type=message_type, audio_url=audio_url, awaiting=True,
+            )
+
+    compiled = compile_context(
+        patient,
+        state.get("history") or [],
+        max_turns=settings.max_history_turns,
+        intake_open_elsewhere=patient_needs_intake(patient),
+        new_thread=fresh,
+    )
 
     try:
         reply = await run_agent(db, patient, compiled, user_text, sid)

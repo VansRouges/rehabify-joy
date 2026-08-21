@@ -18,3 +18,4 @@ python-dotenv>=1.0.1
 boto3>=1.35.0
 python-multipart>=0.0.12
 pytest>=8.3.0
+alembic>=1.14.0

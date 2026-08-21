@@ -16,7 +16,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await sync_schema()
+    if settings.sync_db_on_startup:
+        await sync_schema()
     yield
     await close_redis()
 
